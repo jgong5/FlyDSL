@@ -118,6 +118,29 @@ def _run_iv_assign(Out: fx.Tensor, start: fx.Int32, stop: fx.Int32, stream: fx.S
     _kernel_iv_assign(Out, start, stop).launch(grid=(1, 1, 1), block=(1, 1, 1), stream=stream.value)
 
 
+# ── Case 7: a ThrCopy made before the loop, used inside it ───────────────────
+# The loop carries `thr` (a method is called on it), so it must rebuild with its thread index.
+
+
+@flyc.kernel
+def _kernel_thr_copy_in_loop(Src: fx.Tensor, Dst: fx.Tensor):
+    atom = fx.make_copy_atom(fx.UniversalCopy128b(), fx.Float32)
+    tile_mn, tv = fx.make_layout_tv(fx.make_layout((4, 16), (16, 1)), fx.make_layout((1, 4), (1, 1)))
+    thr = fx.make_tiled_copy(atom, tv, tile_mn).get_slice(fx.thread_idx.x)
+    gS = fx.flat_divide(Src, (4, 64))
+    gD = fx.flat_divide(Dst, (4, 64))
+    for kt in range(fx.Int32(4)):
+        src = thr.partition_S(gS[None, None, 0, kt])
+        frag = fx.make_fragment_like(src)
+        fx.copy(atom, src, frag)
+        fx.copy(atom, frag, thr.partition_D(gD[None, None, 0, kt]))
+
+
+@flyc.jit
+def _run_thr_copy_in_loop(Src: fx.Tensor, Dst: fx.Tensor, stream: fx.Stream = fx.Stream(None)):
+    _kernel_thr_copy_in_loop(Src, Dst).launch(grid=(1, 1, 1), block=(64, 1, 1), stream=stream.value)
+
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
@@ -152,3 +175,10 @@ class TestForAutoIterArgs:
         _run_iv_assign(t_out, fx.Int32(0), fx.Int32(10))
         torch.cuda.synchronize()
         assert out[0].item() == 9, f"iv assign: expected 9, got {out[0].item()}"
+
+    def test_thr_copy_in_loop(self):
+        src = torch.randn(4, 256, device="cuda")
+        dst = torch.zeros_like(src)
+        _run_thr_copy_in_loop(src, dst)
+        torch.cuda.synchronize()
+        assert torch.equal(dst, src)
