@@ -105,6 +105,12 @@ std::optional<std::pair<MakePtrOp, std::optional<int32_t>>> resolveRegOffset(Val
       return std::pair<MakePtrOp, std::optional<int32_t>>{base->first, std::nullopt};
     return std::pair<MakePtrOp, std::optional<int32_t>>{base->first,
                                                         *base->second + intAttr.getValue()};
+  } else if (auto getIterOp = ptr.getDefiningOp<GetIterOp>()) {
+    // A fragment used in a loop body is read back through its view: the view's
+    // iterator is the pointer it was made from.
+    if (auto makeViewOp = getIterOp.getMemref().getDefiningOp<MakeViewOp>())
+      return resolveRegOffset(makeViewOp.getIter());
+    return std::nullopt;
   } else {
     return std::nullopt;
   }
