@@ -2,6 +2,7 @@ import torch
 
 import flydsl.compiler as flyc
 import flydsl.expr as fx
+from flydsl.expr.rocdl import numa
 from tests.utils import shuffle_weight
 
 BLOCK_M = 128
@@ -10,6 +11,8 @@ BLOCK_K = 64
 STAGES_A = 2
 
 M, N, K = 4096, 4096, 4096
+TILES = (M // BLOCK_M) * (N // BLOCK_N)
+TOPO = numa.topology(emulate="gfx1250")
 
 
 @flyc.kernel
@@ -21,7 +24,8 @@ def gemm_kernel(
     tiled_copy_g2s_A: fx.TiledCopy,
 ):
     tid = fx.thread_idx.x
-    bid_x, bid_y, _ = fx.block_idx
+    tile = numa.die_tile(TILES, TOPO)  # B's rows [0, N/2) live on die 0: tiles [0, TILES/2) are its
+    bid_x, bid_y = tile % (M // BLOCK_M), tile // (M // BLOCK_M)
 
     A = fx.rocdl.make_buffer_tensor(A, max_size=False)
     B = fx.rocdl.make_buffer_tensor(B, max_size=False)
@@ -65,7 +69,6 @@ def gemm_kernel(
     mma_frag_B_retile = thr_copy_g2r_B.retile(mma_frag_B)
 
     gA_k_stride = fx.get_scalar(gA_k.stride[2])
-    gB_k_stride = fx.get_scalar(gB_k.stride[2])
 
     def run_pipeline_stage(read_stage, next_k, read_next=True):
         write_stage = read_stage ^ 1
@@ -80,9 +83,8 @@ def gemm_kernel(
             )
             fx.copy(
                 buffer_copy_128b,
-                thr_gB_k[None, None, None, 0],
+                thr_gB_k[None, None, None, next_k],  # die-split B is not linear in k: index, no soffset
                 mma_frag_B_retile[None, None, None, write_stage],
-                soffset=next_k * gB_k_stride,
             )
 
         for block_k_iter in fx.range_constexpr(BLOCK_K // 32):
@@ -159,7 +161,7 @@ def preshuffle_gemm(
     stream: fx.Stream = fx.Stream(None),
 ):
     preshuffle_layout_B = fx.make_layout(((16, N // 16), (8, 4, K // 32)), ((8, 16 * K), (1, 8 * 16, 8 * 16 * 4)))
-    preshuffle_B = fx.Tensor(fx.make_view(fx.get_iter(B), preshuffle_layout_B))
+    preshuffle_B = numa.die_split_tensor(B, preshuffle_layout_B, N // 2 * K, TOPO)
 
     val_per_thr = 8  # 16B / f16
     thrs_col = BLOCK_K // val_per_thr
@@ -177,7 +179,7 @@ def preshuffle_gemm(
     )
 
     gemm_kernel(A, preshuffle_B, C, tiled_mma, tiled_copy_g2s_A).launch(
-        grid=(M // BLOCK_M, N // BLOCK_N, 1), block=(256, 1, 1), smem=32768, stream=stream
+        grid=(TILES, 1, 1), block=(256, 1, 1), smem=32768, stream=stream
     )
 
 
@@ -185,7 +187,7 @@ A = torch.randn(M, K, dtype=torch.float16).cuda()
 B = torch.randn(N, K, dtype=torch.float16).cuda()
 C = torch.zeros(M, N, dtype=torch.float16).cuda()
 
-preshuffle_B = shuffle_weight(B, layout=(16, 16))
+preshuffle_B = numa.pack_die_split(shuffle_weight(B, layout=(16, 16)), N // 2 * K, TOPO)
 
 tA = flyc.from_dlpack(A).mark_layout_dynamic(leading_dim=1, divisibility=16)
 tC = flyc.from_dlpack(C).mark_layout_dynamic(leading_dim=1, divisibility=16)
