@@ -1080,7 +1080,12 @@ FLY_INFER_RETURN_TYPES(MmaMakeFragmentOp) {
   if (stagesAttr) {
     // A staged fragment adds a trailing stage mode of `stages` buffers.
     int32_t stages = static_cast<int32_t>(stagesAttr.getInt());
-    auto *layout = std::get_if<core::Layout<core::Trait>>(&tensor.layout());
+    // A register fragment depends only on the logical coordinates, so a composed
+    // source stages like its outermost linear layout (as core::decompose takes it).
+    const auto *linear = &tensor.layout();
+    while (const auto *composed = std::get_if<core::ComposedLayout<core::Trait>>(linear))
+      linear = &composed->outer();
+    auto *layout = std::get_if<core::Layout<core::Trait>>(linear);
     if (stages <= 0 || !layout || layout->rank() < 2)
       return emitOptionalError(location, "MmaMakeFragmentOp: stages requires a positive count and "
                                          "a layout with at least two modes");

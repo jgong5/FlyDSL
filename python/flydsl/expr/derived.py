@@ -42,6 +42,12 @@ class ThrCopy(TiledCopy):
     def thr_idx(self):
         return self._thr_idx
 
+    @classmethod
+    def __construct_from_ir_values__(cls, values, exemplar=None):
+        # A loop or branch that calls a method on this view carries it as state; the
+        # thread index is not one of its ir.Values, so take it from the exemplar.
+        return cls(TiledCopy(values[0]), exemplar.thr_idx)
+
     @dsl_loc_tracing
     def partition_S(self, src: Tensor):
         return tiled_copy_partition_src(self, src, self._thr_idx_int)
@@ -71,6 +77,11 @@ class ThrMma(TiledMma):
     @property
     def thr_idx(self):
         return self._thr_idx
+
+    @classmethod
+    def __construct_from_ir_values__(cls, values, exemplar=None):
+        # See ThrCopy.__construct_from_ir_values__.
+        return cls(TiledMma(values[0]), exemplar.thr_idx)
 
     @dsl_loc_tracing
     def partition_A(self, a: Tensor):

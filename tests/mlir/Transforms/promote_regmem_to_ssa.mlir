@@ -379,4 +379,31 @@ gpu.module @promote_rmem_to_vector_ssa {
     }
     gpu.return
   }
+
+  // A fragment read back through its view inside a loop (get_iter of make_view)
+  // is still threaded through the loop as vector SSA.
+  // CHECK-LABEL: gpu.func @promote_loop_access_through_view
+  // CHECK-NOT: register
+  // CHECK: scf.for {{.*}} iter_args(%[[ACC:.*]] = %{{.*}}) -> (vector<4xf32>)
+  // CHECK:   %[[SUM:.*]] = arith.addf %{{.*}}, %{{.*}} : vector<4xf32>
+  // CHECK:   scf.yield %{{.*}} : vector<4xf32>
+  gpu.func @promote_loop_access_through_view(%out: !fly.ptr<f32, global>, %n: i32) kernel {
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %zero = arith.constant dense<0.000000e+00> : vector<4xf32>
+    %one = arith.constant dense<1.000000e+00> : vector<4xf32>
+    %layout = fly.static : !fly.layout<4:1>
+    %ptr = fly.make_ptr() {dictAttrs = {allocSize = 4 : i64}} : () -> !fly.ptr<f32, register>
+    %view = fly.make_view(%ptr, %layout) : (!fly.ptr<f32, register>, !fly.layout<4:1>) -> !fly.memref<f32, register, 4:1>
+    fly.ptr.store(%zero, %ptr) : (vector<4xf32>, !fly.ptr<f32, register>) -> ()
+    scf.for %iv = %c0_i32 to %n step %c1_i32 : i32 {
+      %it = fly.get_iter(%view) : (!fly.memref<f32, register, 4:1>) -> !fly.ptr<f32, register>
+      %cur = fly.ptr.load(%it) : (!fly.ptr<f32, register>) -> vector<4xf32>
+      %next = arith.addf %cur, %one : vector<4xf32>
+      fly.ptr.store(%next, %it) : (vector<4xf32>, !fly.ptr<f32, register>) -> ()
+    }
+    %final = fly.ptr.load(%ptr) : (!fly.ptr<f32, register>) -> vector<4xf32>
+    fly.ptr.store(%final, %out) : (vector<4xf32>, !fly.ptr<f32, global>) -> ()
+    gpu.return
+  }
 }
