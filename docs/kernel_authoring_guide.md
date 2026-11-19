@@ -459,6 +459,34 @@ a non-contiguous innermost dim, and gather/scatter
 (`make_tensor_gather_descriptor` / `tensor_load_gather`). See
 ``docs/api/dsl.rst`` for its signature if you have to read one of those.
 
+**Die-affine placement (two-die GPUs)** — `flydsl.expr.rocdl.numa` keeps each
+die's workgroups on memory of their own die when the GPU interleaves memory
+between its dies in chunks (gfx1250 SPX: the die of a byte is
+`parity(addr & 0x04924000)`, 16 KiB chunks). A die-split tensor stores the first
+`split` elements of its logical layout on die 0 and the rest on die 1; the
+placement is a composed layout, so every `fx.copy` through the view applies it
+whatever the tile shape, and the kernel body only changes where its tile index
+comes from:
+
+```python
+from flydsl.expr.rocdl import numa
+
+topo = numa.topology(emulate="gfx1250")    # host; real on gfx1250, emulated elsewhere
+wp = numa.pack_die_split(w, split, topo)    # host, once; pass wp as the wrapper's W
+W = numa.die_split_tensor(W, fx.make_layout((N, K), (K, 1)), split, topo)   # @flyc.jit wrapper
+tile = numa.die_tile(tiles, topo)          # kernel, 1-D grid of `tiles` workgroups
+```
+
+`die_tile` gives die-d workgroups the tiles of part d (`[0, tiles/2)` for die 0).
+It derives the tile from the block index and the XCC id, assuming round-robin
+dispatch over XCCs (`tiles` a multiple of the XCC count).
+
+`topology()` returns the gfx1250 topology only on gfx1250, whose XCC/die-id
+queries and phase-aligned allocation (`numa.empty`) are stubs until those
+interfaces are named. `topology(emulate="gfx1250")` runs the same code on
+gfx942/gfx95x with the die from `HW_REG_XCC_ID`: it checks correctness, not
+locality. See `examples/08-numa_die_affinity.py`.
+
 ### 4.4 GPU operations (`fx.gpu`)
 
 ```python
@@ -864,6 +892,7 @@ Writing a new kernel?
 | `python/flydsl/expr/arith.py` | Arithmetic operations |
 | `python/flydsl/expr/gpu.py` | GPU operations (thread indices, barriers, ...) |
 | `python/flydsl/expr/rocdl/` | ROCm dialect intrinsics (MFMA/WMMA, buffer, TDM, cluster) |
+| `python/flydsl/expr/rocdl/numa.py` | Die-split placement and die-affine tiles for two-die GPUs |
 | `python/flydsl/expr/primitive.py` | Layout algebra primitives (make_shape, crd2idx, etc.) |
 | `python/flydsl/expr/gpu.py` | `SharedAllocator`, GPU ops (thread indices, barriers, ...) |
 | `kernels/gemm/preshuffle_gemm.py` | Preshuffle GEMM kernel example |
