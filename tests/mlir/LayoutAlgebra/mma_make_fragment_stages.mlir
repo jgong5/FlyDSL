@@ -32,3 +32,20 @@ func.func @test_mma_make_fragment_without_stages(
   %frag = fly.mma.make_fragment(b, %tiled_mma, %input) : (!fly.tiled_mma<!fly.mma_atom<!fly_rocdl.cdna3.mfma<16x16x16, (f16, f16) -> f32>>, <(1,1,1):(0,1,2)>>, !fly.memref<f16, shared, (16,16):(1,16)>) -> !fly.memref<f16, register, (4,1,1):(1,0,0)>
   return %frag : !fly.memref<f16, register, (4,1,1):(1,0,0)>
 }
+
+// -----
+
+// A composed source (swizzle over an inner layout over the logical one) stages like
+// its outer linear layout.
+// CHECK-LABEL: @test_mma_make_fragment_with_stages_composed
+func.func @test_mma_make_fragment_with_stages_composed(
+    %tiled_mma: !fly.tiled_mma<!fly.mma_atom<!fly_rocdl.cdna3.mfma<16x16x16, (f16, f16) -> f32>>, <(1,1,1):(0,1,2)>>,
+    %ptr: !fly.ptr<f16, global>) -> !fly.memref<f16, register, (4,1,1,2):(1,0,0,4)> {
+  %layout = fly.static : !fly.composed_layout<S<1,4,3> o 0 o [(16,16):(1,32) o 0 o (16,16):(1,16)]>
+  %input = fly.make_view(%ptr, %layout) : (!fly.ptr<f16, global>, !fly.composed_layout<S<1,4,3> o 0 o [(16,16):(1,32) o 0 o (16,16):(1,16)]>) -> !fly.memref<f16, global, S<1,4,3> o 0 o [(16,16):(1,32) o 0 o (16,16):(1,16)]>
+
+  // CHECK: fly.static : !fly.layout<(4,1,1,2):(1,0,0,4)>
+  // CHECK: fly.make_ptr() {dictAttrs = {allocSize = 8 : i64}}
+  %frag = fly.mma.make_fragment(b, %tiled_mma, %input, stages = 2) : (!fly.tiled_mma<!fly.mma_atom<!fly_rocdl.cdna3.mfma<16x16x16, (f16, f16) -> f32>>, <(1,1,1):(0,1,2)>>, !fly.memref<f16, global, S<1,4,3> o 0 o [(16,16):(1,32) o 0 o (16,16):(1,16)]>) -> !fly.memref<f16, register, (4,1,1,2):(1,0,0,4)>
+  return %frag : !fly.memref<f16, register, (4,1,1,2):(1,0,0,4)>
+}
