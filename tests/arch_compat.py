@@ -30,7 +30,7 @@ EXAMPLE_ARCHITECTURES = {
     "01-vectorAdd.py": ("*",),
     "02-tiledCopy.py": ("gfx*",),
     "03-tiledMma.py": ("gfx9*",),
-    "04-preshuffle_gemm.py": ("gfx9*",),
+    "04-preshuffle_gemm.py": ("gfx942", "gfx95*"),  # numa: emulated gfx1250 topology
     "05-gather_scatter.py": ("*",),
     "06-cdna5_tensor_copy.py": ("gfx1250*",),
     "07-ktrace_wave_timeline.py": ("gfx942", "gfx95*"),
